@@ -1,14 +1,10 @@
 from flask import Flask, request, jsonify, send_file
 import os
+import tempfile
 from src.utils import list_pdf_fields
 from src.fill_pdf import fill_pdf_from_json
 
 app = Flask(__name__)
-
-UPLOAD_FOLDER = "uploads"
-OUTPUT_FOLDER = "output"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 
 @app.route("/fields", methods=["POST"])
@@ -20,10 +16,24 @@ def fields():
         return jsonify({"error": "No PDF uploaded"}), 400
 
     pdf_file = request.files["pdf"]
-    pdf_path = os.path.join(UPLOAD_FOLDER, pdf_file.filename)
-    pdf_file.save(pdf_path)
 
-    fields = list_pdf_fields(pdf_path)
+    # Save PDF temporarily (ensure closed on Windows)
+    tmp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    try:
+        pdf_file.save(tmp_pdf.name)
+        pdf_path = tmp_pdf.name
+    finally:
+        tmp_pdf.close()
+
+    try:
+        fields = list_pdf_fields(pdf_path)
+    finally:
+        # Safe cleanup
+        try:
+            os.remove(pdf_path)
+        except Exception:
+            pass
+
     return jsonify({"fields": fields})
 
 
@@ -38,17 +48,48 @@ def fill():
     pdf_file = request.files["pdf"]
     json_file = request.files["json"]
 
-    pdf_path = os.path.join(UPLOAD_FOLDER, pdf_file.filename)
-    json_path = os.path.join(UPLOAD_FOLDER, json_file.filename)
-    output_path = os.path.join(OUTPUT_FOLDER, f"filled_{pdf_file.filename}")
+    # Create temporary input files (ensure closed properly on Windows)
+    tmp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    tmp_json = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
 
-    pdf_file.save(pdf_path)
-    json_file.save(json_path)
+    try:
+        pdf_file.save(tmp_pdf.name)
+        json_file.save(tmp_json.name)
+        pdf_path = tmp_pdf.name
+        json_path = tmp_json.name
+    finally:
+        tmp_pdf.close()
+        tmp_json.close()
 
-    # Use your existing function
+    # Create output file safely with mkstemp (avoids locking issues on Windows)
+    fd, output_path = tempfile.mkstemp(suffix=".pdf")
+    os.close(fd)  # Close immediately so it's not locked
+
+    # Fill PDF
     fill_pdf_from_json(pdf_path, output_path, json_path, flatten=True)
 
-    return send_file(output_path, as_attachment=True)
+    # Cleanup input files
+    try:
+        os.remove(pdf_path)
+    except Exception:
+        pass
+    try:
+        os.remove(json_path)
+    except Exception:
+        pass
+
+    # Send file back to client
+    response = send_file(output_path, as_attachment=True, download_name="filled_form.pdf")
+
+    # Ensure output is deleted after response is sent
+    @response.call_on_close
+    def cleanup():
+        try:
+            os.remove(output_path)
+        except Exception:
+            pass
+
+    return response
 
 
 if __name__ == "__main__":
