@@ -36,7 +36,7 @@ def fields():
 
     return jsonify({"fields": fields})
 
-
+'''
 @app.route("/fill", methods=["POST"])
 def fill():
     """
@@ -91,6 +91,48 @@ def fill():
 
     return response
 
+'''
+@app.route("/fill", methods=["POST"])
+def fill():
+    """
+    Fill a PDF using a JSON file and return the filled PDF
+    """
+    if "pdf" not in request.files or "json" not in request.files:
+        return jsonify({"error": "PDF and JSON file required"}), 400
+
+    pdf_file = request.files["pdf"]
+    json_file = request.files["json"]
+
+    # ✅ Keep original names
+    upload_dir = tempfile.mkdtemp()
+    pdf_path = os.path.join(upload_dir, pdf_file.filename)
+    json_path = os.path.join(upload_dir, json_file.filename)
+
+    pdf_file.save(pdf_path)
+    json_file.save(json_path)
+
+    # Create output file safely
+    fd, output_path = tempfile.mkstemp(suffix=".pdf")
+    os.close(fd)
+
+    # Fill PDF
+    fill_pdf_from_json(pdf_path, output_path, json_path, flatten=True)
+
+    # Send file back to client
+    response = send_file(output_path, as_attachment=True, download_name="filled_form.pdf")
+
+    # Cleanup after response
+    @response.call_on_close
+    def cleanup():
+        try:
+            os.remove(pdf_path)
+            os.remove(json_path)
+            os.remove(output_path)
+            os.rmdir(upload_dir)  # remove temp dir
+        except Exception:
+            pass
+
+    return response
 
 if __name__ == "__main__":
     app.run(debug=True, port=9000)
